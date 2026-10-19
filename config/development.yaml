@@ -21,9 +21,8 @@ cluster:
   resharding_enabled: true
 
   consensus:
-    # In legacy mode, compare operation handlers with the in-memory state machine.
-    # In state_machine mode, check applied actions against the in-memory state:
-    # - disabled: skip legacy comparison; sample 1% of state_machine entries for log checks
+    # Compare applied actions with the in-memory state machine:
+    # - disabled: sample 1% of entries and log divergences
     # - log: log divergences
     # - panic: panic on divergence
     shadow_state_machine: disabled

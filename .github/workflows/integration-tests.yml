@@ -89,9 +89,6 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3]
-        apply-mode: [legacy, state_machine]
-    env:
-      QDRANT__CLUSTER__CONSENSUS__APPLY_MODE: ${{ matrix.apply-mode }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -130,7 +127,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: consensus-test-durations-${{ matrix.apply-mode }}-${{ matrix.shard }}
+          name: consensus-test-durations-${{ matrix.shard }}
           path: tests/consensus_tests/.test_durations
           include-hidden-files: true
           retention-days: 7
@@ -139,7 +136,7 @@ jobs:
         if: always()
         with:
           path: consensus_test_logs
-          name: consensus-test-logs-${{ matrix.apply-mode }}-${{ matrix.shard }}
+          name: consensus-test-logs-${{ matrix.shard }}
           retention-days: 10
 
   test-consensus-compose:

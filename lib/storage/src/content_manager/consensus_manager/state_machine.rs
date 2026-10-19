@@ -19,9 +19,7 @@ impl<C: CollectionContainer> ConsensusManager<C> {
         } else {
             true
         };
-        let outcome = self
-            .shadow_apply(operation)
-            .expect("application CSM enabled");
+        let outcome = self.state_machine_apply(operation);
         let result = match &outcome {
             ApplyOutcome::Accepted(actions) => actions
                 .iter()
@@ -46,6 +44,13 @@ impl<C: CollectionContainer> ConsensusManager<C> {
         }
 
         result
+    }
+
+    pub(super) fn state_machine_apply(&self, operation: &ConsensusOperations) -> ApplyOutcome {
+        let persistent = self.persistent.read();
+        self.shadow
+            .lock()
+            .apply(self.toc.as_ref(), &persistent, operation)
     }
 
     fn should_check_state_machine(&self) -> bool {
@@ -125,8 +130,6 @@ impl<C: CollectionContainer> ConsensusManager<C> {
         let batch = {
             let persistent = self.persistent.read();
             self.shadow
-                .as_ref()
-                .expect("application CSM enabled")
                 .lock()
                 .apply_batch(self.toc.as_ref(), &persistent, &operations)
         };

@@ -1,8 +1,8 @@
 //! Run consensus state machine alongside a stand-in for `TableOfContent`.
 //!
 //! Most tests use `ShadowStateMachine` directly, so they can inspect divergence reports.
-//! Tests using `ConsensusManager` only check that applying a Raft entry runs validation
-//! and panics on a divergence in panic mode.
+//! Tests using `ConsensusManager` run its retained operation handlers with validation
+//! and check that panic mode reports divergences.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
@@ -60,7 +60,7 @@ fn matching_entry() {
     };
 
     manager
-        .apply_normal_entry(&entry(&operation))
+        ._apply_normal_entry(&entry(&operation))
         .expect("entry applied");
 }
 
@@ -71,7 +71,7 @@ fn manager_initializes_state_machine_before_handler() {
     let dir = tempdir();
     let manager = manager(container.clone(), ShadowMode::Panic, dir.path());
 
-    manager.apply_normal_entry(&entry(&nop())).expect("nop");
+    manager._apply_normal_entry(&entry(&nop())).expect("nop");
 
     assert_eq!(container.snapshots_before_handler(), 1);
 }
@@ -86,7 +86,7 @@ fn manager_preserves_handler_result() {
     let dir = tempdir();
     let manager = manager(container, ShadowMode::Disabled, dir.path());
 
-    assert!(!manager.apply_normal_entry(&entry(&nop())).expect("nop"));
+    assert!(!manager._apply_normal_entry(&entry(&nop())).expect("nop"));
 }
 
 #[test]
@@ -139,7 +139,7 @@ fn manager_compares_peer_removal_rejection_before_stop_flag() {
     let manager = manager(container.clone(), ShadowMode::Panic, dir.path());
 
     let stop = manager
-        .on_peer_remove(OTHER_PEER_ID)
+        ._on_peer_remove(OTHER_PEER_ID)
         .expect("user error must not stop consensus");
 
     assert!(!stop);
@@ -159,7 +159,7 @@ fn manager_detects_peer_removal_outcome_divergence() {
     let dir = tempdir();
     let manager = manager(Arc::new(container), ShadowMode::Panic, dir.path());
 
-    let _ = manager.on_peer_remove(OTHER_PEER_ID);
+    let _ = manager._on_peer_remove(OTHER_PEER_ID);
 }
 
 #[test]
@@ -168,7 +168,7 @@ fn manager_self_removal_skips_shadow_validation() {
     let dir = tempdir();
     let manager = manager(container.clone(), ShadowMode::Panic, dir.path());
 
-    let stop = manager.on_peer_remove(PEER_ID).expect("self removal");
+    let stop = manager._on_peer_remove(PEER_ID).expect("self removal");
 
     assert!(stop);
     assert_eq!(container.snapshots(), 0);
@@ -376,7 +376,7 @@ fn snapshot_invalidates() {
     let dir = tempdir();
     let manager = manager(container, ShadowMode::Panic, dir.path());
 
-    manager.apply_normal_entry(&entry(&nop())).expect("nop");
+    manager._apply_normal_entry(&entry(&nop())).expect("nop");
 
     // Snapshot removes the existing collection and its alias
     manager
@@ -384,7 +384,7 @@ fn snapshot_invalidates() {
         .expect("snapshot applied")
         .expect("snapshot applied");
 
-    manager.apply_normal_entry(&entry(&nop())).expect("nop");
+    manager._apply_normal_entry(&entry(&nop())).expect("nop");
 }
 
 /// `ConsensusManager` should panic on a divergence when consensus state machine validation runs
@@ -396,11 +396,11 @@ fn manager_panics_on_divergence() {
     let dir = tempdir();
     let manager = manager(container.clone(), ShadowMode::Panic, dir.path());
 
-    manager.apply_normal_entry(&entry(&nop())).expect("nop");
+    manager._apply_normal_entry(&entry(&nop())).expect("nop");
 
     container.add_alias(OTHER_ALIAS);
 
-    manager.apply_normal_entry(&entry(&nop())).expect("nop");
+    manager._apply_normal_entry(&entry(&nop())).expect("nop");
 }
 
 /// With consensus state machine validation disabled, `ConsensusManager` should not panic on
@@ -411,11 +411,11 @@ fn manager_disabled() {
     let dir = tempdir();
     let manager = manager(container.clone(), ShadowMode::Disabled, dir.path());
 
-    manager.apply_normal_entry(&entry(&nop())).expect("nop");
+    manager._apply_normal_entry(&entry(&nop())).expect("nop");
 
     container.add_alias(OTHER_ALIAS);
 
-    manager.apply_normal_entry(&entry(&nop())).expect("nop");
+    manager._apply_normal_entry(&entry(&nop())).expect("nop");
 }
 
 #[test]
