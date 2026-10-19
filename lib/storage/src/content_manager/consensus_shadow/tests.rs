@@ -2,7 +2,7 @@
 //!
 //! Most tests use `ShadowStateMachine` directly, so they can inspect divergence reports.
 //! Tests using `ConsensusManager` run its retained operation handlers with validation
-//! and check that panic mode reports divergences.
+//! and check that debug builds panic on divergences.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
@@ -18,6 +18,7 @@ use collection::shards::replica_set::replica_set_state::ReplicaState;
 use collection::shards::resharding::{ReshardState, ReshardingStage};
 use collection::shards::shard::{PeerId, ShardId};
 use collection::shards::transfer::{ShardTransfer, ShardTransferMethod};
+use parking_lot::Mutex;
 use raft::eraftpb::{ConfState, Entry as RaftEntry, Snapshot, SnapshotMetadata};
 use segment::types::PayloadSchemaType;
 use serde_json::json;
@@ -52,7 +53,7 @@ const MISSING: &str = "outis";
 fn matching_entry() {
     let container = Arc::new(container());
     let dir = tempdir();
-    let manager = manager(container, ShadowMode::Panic, dir.path());
+    let manager = manager(container, dir.path());
 
     let operation = ConsensusOperations::UpdateClusterMetadata {
         key: "answer".to_string(),
@@ -69,7 +70,7 @@ fn matching_entry() {
 fn manager_initializes_state_machine_before_handler() {
     let container = Arc::new(container());
     let dir = tempdir();
-    let manager = manager(container.clone(), ShadowMode::Panic, dir.path());
+    let manager = manager(container.clone(), dir.path());
 
     manager._apply_normal_entry(&entry(&nop())).expect("nop");
 
@@ -84,7 +85,7 @@ fn manager_preserves_handler_result() {
 
     let container = Arc::new(container);
     let dir = tempdir();
-    let manager = manager(container, ShadowMode::Disabled, dir.path());
+    let manager = manager(container, dir.path());
 
     assert!(!manager._apply_normal_entry(&entry(&nop())).expect("nop"));
 }
@@ -136,7 +137,7 @@ fn manager_compares_peer_removal_rejection_before_stop_flag() {
     let container = Arc::new(container);
     let before = container.collections.lock().clone();
     let dir = tempdir();
-    let manager = manager(container.clone(), ShadowMode::Panic, dir.path());
+    let manager = manager(container.clone(), dir.path());
 
     let stop = manager
         ._on_peer_remove(OTHER_PEER_ID)
@@ -157,7 +158,7 @@ fn manager_detects_peer_removal_outcome_divergence() {
     let mut container = container();
     container.peer_removal_error = Some(StorageError::bad_request("unexpected rejection"));
     let dir = tempdir();
-    let manager = manager(Arc::new(container), ShadowMode::Panic, dir.path());
+    let manager = manager(Arc::new(container), dir.path());
 
     let _ = manager._on_peer_remove(OTHER_PEER_ID);
 }
@@ -166,7 +167,7 @@ fn manager_detects_peer_removal_outcome_divergence() {
 fn manager_self_removal_skips_shadow_validation() {
     let container = Arc::new(container());
     let dir = tempdir();
-    let manager = manager(container.clone(), ShadowMode::Panic, dir.path());
+    let manager = manager(container.clone(), dir.path());
 
     let stop = manager._on_peer_remove(PEER_ID).expect("self removal");
 
@@ -178,7 +179,7 @@ fn manager_self_removal_skips_shadow_validation() {
 /// state; validation should report the difference
 #[test]
 fn diverged_collection() {
-    let shadow = Shadow::new(ShadowMode::Panic);
+    let shadow = Shadow::new();
 
     assert_eq!(shadow.apply(&nop()), None);
 
@@ -194,7 +195,7 @@ fn diverged_collection() {
 /// differences under that collection's name
 #[test]
 fn diverged_collection_under_alias() {
-    let shadow = Shadow::new(ShadowMode::Panic);
+    let shadow = Shadow::new();
 
     assert_eq!(shadow.apply(&nop()), None);
 
@@ -209,7 +210,7 @@ fn diverged_collection_under_alias() {
 /// Peer removal can change every collection, so validation must compare all of them
 #[test]
 fn remove_peer_compares_collections() {
-    let shadow = Shadow::new(ShadowMode::Panic);
+    let shadow = Shadow::new();
     shadow.container.add_shard_for(0, OTHER_PEER_ID);
 
     assert_eq!(shadow.apply(&nop()), None);
@@ -225,7 +226,7 @@ fn remove_peer_compares_collections() {
 /// the same error class
 #[test]
 fn matching_rejection() {
-    let shadow = Shadow::new(ShadowMode::Panic);
+    let shadow = Shadow::new();
 
     let rejection = Err(StorageError::not_found(format!(
         "Collection `{MISSING}` doesn't exist!"
@@ -242,7 +243,7 @@ fn matching_rejection() {
 /// reaches the client.
 #[test]
 fn differing_rejection() {
-    let shadow = Shadow::new(ShadowMode::Panic);
+    let shadow = Shadow::new();
     let rejection = Err(StorageError::bad_request("no"));
 
     assert!(
@@ -256,7 +257,7 @@ fn differing_rejection() {
 /// operation handler, even though neither state changes
 #[test]
 fn rejected_by_apply_only() {
-    let shadow = Shadow::new(ShadowMode::Panic);
+    let shadow = Shadow::new();
     let rejection = Err(StorageError::bad_request("no"));
 
     assert!(shadow.apply_with(&nop(), &rejection).is_some());
@@ -273,7 +274,7 @@ fn not_covered_invalidates() {
 /// instead of rebuilding the entire consensus state machine
 #[test]
 fn not_covered_resync() {
-    let shadow = Shadow::new(ShadowMode::Panic);
+    let shadow = Shadow::new();
 
     // Initialization reads all collections; resync below should only read the named collection
     assert_eq!(shadow.apply(&nop()), None);
@@ -298,7 +299,7 @@ fn not_covered_resync() {
 /// Resyncing one collection should not hide a divergence in unrelated state
 #[test]
 fn not_covered_keeps_the_rest() {
-    let shadow = Shadow::new(ShadowMode::Panic);
+    let shadow = Shadow::new();
 
     assert_eq!(shadow.apply(&nop()), None);
 
@@ -316,7 +317,7 @@ fn not_covered_keeps_the_rest() {
 /// state as a divergence.
 #[test]
 fn dirty_collection_resync() {
-    let shadow = Shadow::new(ShadowMode::Panic);
+    let shadow = Shadow::new();
 
     assert_eq!(shadow.apply(&nop()), None);
 
@@ -331,7 +332,7 @@ fn dirty_collection_resync() {
 /// before validation compares state. A second resync should load recovered collection state.
 #[test]
 fn dirty_collection_resync_mid_apply() {
-    let shadow = Shadow::new(ShadowMode::Panic);
+    let shadow = Shadow::new();
 
     assert_eq!(shadow.apply(&nop()), None);
 
@@ -357,7 +358,7 @@ fn service_error_invalidates() {
 /// Alias added directly to `Container` would be reported as a divergence if state machine is not
 /// invalidated.
 fn invalidates(operation: &ConsensusOperations, result: &StorageResult<bool>) {
-    let shadow = Shadow::new(ShadowMode::Panic);
+    let shadow = Shadow::new();
 
     assert_eq!(shadow.apply(&nop()), None);
 
@@ -374,7 +375,7 @@ fn snapshot_invalidates() {
     let container = Arc::new(container());
 
     let dir = tempdir();
-    let manager = manager(container, ShadowMode::Panic, dir.path());
+    let manager = manager(container, dir.path());
 
     manager._apply_normal_entry(&entry(&nop())).expect("nop");
 
@@ -387,29 +388,13 @@ fn snapshot_invalidates() {
     manager._apply_normal_entry(&entry(&nop())).expect("nop");
 }
 
-/// `ConsensusManager` should panic on a divergence when consensus state machine validation runs
-/// in panic mode
+/// Debug builds should panic when applied state diverges from the consensus state machine
 #[test]
 #[should_panic(expected = "aliases")]
 fn manager_panics_on_divergence() {
     let container = Arc::new(container());
     let dir = tempdir();
-    let manager = manager(container.clone(), ShadowMode::Panic, dir.path());
-
-    manager._apply_normal_entry(&entry(&nop())).expect("nop");
-
-    container.add_alias(OTHER_ALIAS);
-
-    manager._apply_normal_entry(&entry(&nop())).expect("nop");
-}
-
-/// With consensus state machine validation disabled, `ConsensusManager` should not panic on
-/// the same divergence
-#[test]
-fn manager_disabled() {
-    let container = Arc::new(container());
-    let dir = tempdir();
-    let manager = manager(container.clone(), ShadowMode::Disabled, dir.path());
+    let manager = manager(container.clone(), dir.path());
 
     manager._apply_normal_entry(&entry(&nop())).expect("nop");
 
@@ -475,11 +460,11 @@ struct Shadow {
 }
 
 impl Shadow {
-    fn new(mode: ShadowMode) -> Self {
+    fn new() -> Self {
         let dir = tempdir();
 
         Self {
-            machine: mode.build().expect("state machine enabled"),
+            machine: Mutex::new(ShadowStateMachine::default()),
             container: container(),
             persistent: persistent(dir.path()),
             _dir: dir,
@@ -538,13 +523,8 @@ fn tempdir() -> TempDir {
     Builder::new().prefix("shadow").tempdir().expect("temp dir")
 }
 
-/// Build `ConsensusManager` with the test `Container` and consensus state machine validation
-/// running in `mode`
-fn manager(
-    container: Arc<Container>,
-    mode: ShadowMode,
-    path: &Path,
-) -> ConsensusManager<Container> {
+/// Build `ConsensusManager` with the test `Container`
+fn manager(container: Arc<Container>, path: &Path) -> ConsensusManager<Container> {
     let (sender, _receiver) = mpsc::channel();
 
     ConsensusManager::new(
@@ -554,7 +534,6 @@ fn manager(
         path,
     )
     .expect("manager initialized")
-    .with_shadow(mode)
 }
 
 fn entry(operation: &ConsensusOperations) -> RaftEntry {

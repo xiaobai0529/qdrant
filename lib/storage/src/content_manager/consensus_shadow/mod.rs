@@ -6,8 +6,6 @@ pub mod diff;
 mod tests;
 
 use collection::shards::CollectionId;
-use parking_lot::Mutex;
-use serde::Deserialize;
 
 use self::diff::ShallowState;
 use crate::content_manager::CollectionContainer;
@@ -20,45 +18,14 @@ use crate::content_manager::consensus_state_machine::{
 };
 use crate::content_manager::errors::{StorageError, StorageResult};
 
-/// Consensus state machine validation mode
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum ShadowMode {
-    #[default]
-    Disabled,
-    Log,
-    Panic,
-}
-
-impl ShadowMode {
-    pub fn build(self) -> Option<Mutex<ShadowStateMachine>> {
-        let panic_on_divergence = match self {
-            ShadowMode::Disabled => return None,
-            ShadowMode::Log => false,
-            ShadowMode::Panic => true,
-        };
-
-        log::info!("Consensus shadow validation enabled: mode={self:?}");
-
-        Some(Mutex::new(ShadowStateMachine::new(panic_on_divergence)))
-    }
-}
-
 /// Lazily initialized consensus state machine used for application or validation
+#[derive(Default)]
 pub struct ShadowStateMachine {
     /// Initialized from applied state on first use and after invalidation
     state_machine: Option<ConsensusStateMachine>,
-    panic_on_divergence: bool,
 }
 
 impl ShadowStateMachine {
-    pub(crate) fn new(panic_on_divergence: bool) -> Self {
-        Self {
-            state_machine: None,
-            panic_on_divergence,
-        }
-    }
-
     pub fn invalidate(&mut self) {
         if self.state_machine.is_some() {
             log::debug!("Consensus shadow state machine invalidated");
@@ -144,7 +111,7 @@ impl ShadowStateMachine {
             return;
         };
 
-        if self.panic_on_divergence {
+        if cfg!(any(test, debug_assertions)) {
             panic!(
                 "Consensus state machine diverged from applied state: {report}; \
                  operation={operation:?}; outcome={outcome:?}; handler_error={:?}",

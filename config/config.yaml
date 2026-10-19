@@ -484,10 +484,6 @@ cluster:
 
   # Configuration related to distributed consensus algorithm
   consensus:
-    # Compare the state machine with applied state: disabled, log, panic.
-    # When disabled, check a 1% sample and log divergences.
-    shadow_state_machine: disabled
-
     # How frequently peers should ping each other.
     # Setting this parameter to lower value will allow consensus
     # to detect disconnected nodes earlier, but too frequent

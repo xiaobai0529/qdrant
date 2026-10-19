@@ -39,7 +39,7 @@ impl<C: CollectionContainer> ConsensusManager<C> {
             // The interpreter has advanced past any writes that failed. Replay must start
             // from the state those writes actually left in storage.
             self.invalidate_shadow();
-        } else if self.should_check_state_machine() {
+        } else if Self::should_check_state_machine() {
             self.shadow_compare(operation, &outcome, &result);
         }
 
@@ -53,12 +53,10 @@ impl<C: CollectionContainer> ConsensusManager<C> {
             .apply(self.toc.as_ref(), &persistent, operation)
     }
 
-    fn should_check_state_machine(&self) -> bool {
-        match self.shadow_mode {
-            // Sample application even without full validation enabled
-            ShadowMode::Disabled => rand::random_ratio(1, 100),
-            ShadowMode::Log | ShadowMode::Panic => true,
-        }
+    fn should_check_state_machine() -> bool {
+        // Check every entry in debug builds so tests catch divergences deterministically.
+        // Collection reads are expensive, so release builds check a 1% sample.
+        cfg!(any(test, debug_assertions)) || rand::random_ratio(1, 100)
     }
 
     pub(super) fn notify_operation(
@@ -163,7 +161,7 @@ impl<C: CollectionContainer> ConsensusManager<C> {
         });
         if stop_consensus {
             self.invalidate_shadow();
-        } else if self.should_check_state_machine() {
+        } else if Self::should_check_state_machine() {
             // Planning advanced to the end of the batch, so compare only after every action ran
             for (operation, actions) in operations.iter().zip(batch) {
                 self.shadow_compare(operation, &ApplyOutcome::Accepted(actions), &Ok(true));

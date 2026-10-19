@@ -18,7 +18,7 @@ use storage::content_manager::CollectionContainer;
 use storage::content_manager::collection_meta_ops::*;
 use storage::content_manager::consensus_manager::{ConsensusManager, SnapshotData};
 use storage::content_manager::consensus_ops::ConsensusOperations;
-use storage::content_manager::consensus_shadow::{ShadowMode, read_cluster_state};
+use storage::content_manager::consensus_shadow::read_cluster_state;
 use storage::content_manager::consensus_state_machine::{Action, ClusterState};
 use storage::content_manager::errors::StorageError;
 use storage::content_manager::shard_distribution::ShardDistributionProposal;
@@ -35,10 +35,8 @@ fn collection_operations_match_legacy_handlers() {
     let legacy = consensus_manager(
         &legacy_dir,
         legacy_dispatcher.toc(&FULL_ACCESS, &pass).clone(),
-    )
-    .with_shadow(ShadowMode::Panic);
-    let csm = consensus_manager(&csm_dir, csm_dispatcher.toc(&FULL_ACCESS, &pass).clone())
-        .with_shadow(ShadowMode::Panic);
+    );
+    let csm = consensus_manager(&csm_dir, csm_dispatcher.toc(&FULL_ACCESS, &pass).clone());
     let operations = vec![
         create_collection("books", false),
         meta(CollectionMetaOperations::ChangeAliases(
@@ -166,7 +164,7 @@ fn alias_action_failure_reloads_before_replay() {
     let (dir, _handle, dispatcher) = new_dispatcher();
     let pass = new_unchecked_verification_pass();
     let toc = dispatcher.toc(&FULL_ACCESS, &pass);
-    let csm = consensus_manager(&dir, toc.clone()).with_shadow(ShadowMode::Panic);
+    let csm = consensus_manager(&dir, toc.clone());
     csm.apply_normal_entry(&entry(&create_collection("books", false)))
         .unwrap();
     let alias = meta(CollectionMetaOperations::ChangeAliases(
@@ -220,7 +218,7 @@ fn delete_collection_replays_after_aliases_and_collection_removal() {
     let (dir, _handle, dispatcher) = new_dispatcher();
     let pass = new_unchecked_verification_pass();
     let toc = dispatcher.toc(&FULL_ACCESS, &pass);
-    let manager = consensus_manager(&dir, toc.clone()).with_shadow(ShadowMode::Panic);
+    let manager = consensus_manager(&dir, toc.clone());
     manager
         .apply_normal_entry(&entry(&create_collection("books", false)))
         .unwrap();
@@ -309,7 +307,6 @@ fn configuration_batch_rejection_preserves_membership_and_prior_changes() {
     manager
         .add_peer(1, "http://127.0.0.1:6336".parse().unwrap())
         .unwrap();
-    let manager = manager.with_shadow(ShadowMode::Panic);
     let mut raw = raw_node();
     let before = state(&manager, toc);
     let conf_before = raw.raft.prs().conf().to_conf_state();
@@ -339,7 +336,7 @@ fn configuration_changes_apply_and_self_removal_stops_consensus() {
     let (dir, _handle, dispatcher) = new_dispatcher();
     let pass = new_unchecked_verification_pass();
     let toc = dispatcher.toc(&FULL_ACCESS, &pass);
-    let manager = consensus_manager(&dir, toc.clone()).with_shadow(ShadowMode::Panic);
+    let manager = consensus_manager(&dir, toc.clone());
     let mut raw = raw_node();
 
     assert!(
@@ -387,7 +384,7 @@ fn joint_configuration_save_failure_replays_both_transitions() {
     let (dir, _handle, dispatcher) = new_dispatcher();
     let pass = new_unchecked_verification_pass();
     let toc = dispatcher.toc(&FULL_ACCESS, &pass);
-    let manager = consensus_manager(&dir, toc.clone()).with_shadow(ShadowMode::Panic);
+    let manager = consensus_manager(&dir, toc.clone());
     let mut raw = raw_node();
     let enter = conf_entry(
         &[
@@ -428,7 +425,7 @@ fn discovery_address_updates_invalidate_application_state() {
     let (dir, _handle, dispatcher) = new_dispatcher();
     let pass = new_unchecked_verification_pass();
     let toc = dispatcher.toc(&FULL_ACCESS, &pass);
-    let manager = consensus_manager(&dir, toc.clone()).with_shadow(ShadowMode::Panic);
+    let manager = consensus_manager(&dir, toc.clone());
     let nop = entry_from_meta(CollectionMetaOperations::Nop { token: 0 });
     manager.apply_normal_entry(&nop).unwrap();
 
@@ -445,7 +442,7 @@ fn snapshot_invalidates_application_state() {
     let (dir, _handle, dispatcher) = new_dispatcher();
     let pass = new_unchecked_verification_pass();
     let toc = dispatcher.toc(&FULL_ACCESS, &pass);
-    let manager = consensus_manager(&dir, toc.clone()).with_shadow(ShadowMode::Panic);
+    let manager = consensus_manager(&dir, toc.clone());
     manager
         .apply_normal_entry(&entry(&create_collection("books", false)))
         .unwrap();

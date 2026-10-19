@@ -30,7 +30,7 @@ use tonic::transport::Uri;
 use super::CollectionContainer;
 use super::alias_mapping::AliasMapping;
 use super::consensus_ops::{ConsensusOperations, SnapshotStatus};
-use super::consensus_shadow::{ShadowMode, ShadowStateMachine};
+use super::consensus_shadow::ShadowStateMachine;
 use super::consensus_state_machine::ApplyOutcome;
 use super::errors::{StorageError, StorageResult};
 use crate::content_manager::consensus::applied_log::{AppliedEntryRing, AppliedLog};
@@ -116,7 +116,6 @@ pub struct ConsensusManager<C: CollectionContainer> {
     applied_log: AppliedEntryRing,
     /// Consensus state machine used to plan application and check applied state
     shadow: Mutex<ShadowStateMachine>,
-    shadow_mode: ShadowMode,
 }
 
 impl<C: CollectionContainer> ConsensusManager<C> {
@@ -161,18 +160,8 @@ impl<C: CollectionContainer> ConsensusManager<C> {
             message_send_failures: Default::default(),
             next_peer_metadata_update_attempt: Mutex::new(Instant::now()),
             applied_log: Default::default(),
-            shadow: Mutex::new(ShadowStateMachine::new(false)),
-            shadow_mode: ShadowMode::Disabled,
+            shadow: Mutex::new(ShadowStateMachine::default()),
         })
-    }
-
-    /// Configure consensus state machine validation
-    pub fn with_shadow(mut self, mode: ShadowMode) -> Self {
-        self.shadow_mode = mode;
-        self.shadow = mode
-            .build()
-            .unwrap_or_else(|| Mutex::new(ShadowStateMachine::new(false)));
-        self
     }
 
     /// Snapshot of the recently applied entries on this peer, oldest first.
@@ -643,25 +632,12 @@ impl<C: CollectionContainer> ConsensusManager<C> {
     pub fn _apply_normal_entry(&self, entry: &RaftEntry) -> Result<bool, StorageError> {
         let operation: ConsensusOperations = entry.try_into()?;
 
-        // Apply to consensus state machine before operation handler changes applied state
-        let outcome = self.shadow_apply(&operation);
-
-        // If consensus state machine is enabled, we need to clone the operation,
-        // because `apply_consensus_op` consumes it
-        let shadow_op = if self.shadow_mode != ShadowMode::Disabled {
-            operation.clone()
-        } else {
-            // Consensus state machine is disabled, this is a dummy operation that is never used
-            ConsensusOperations::RequestSnapshot
-        };
-
+        // Plan before the operation handler changes applied state
+        let outcome = self.state_machine_apply(&operation);
         let on_apply = self.on_consensus_op_apply.lock().remove(&operation);
-        let result = self.apply_consensus_op(operation);
+        let result = self.apply_consensus_op(operation.clone());
 
-        // Compare operation handler with consensus state machine
-        if let Some(outcome) = outcome {
-            self.shadow_compare(&shadow_op, &outcome, &result);
-        }
+        self.shadow_compare(&operation, &outcome, &result);
 
         if let Some(on_apply) = on_apply
             && on_apply.send(result.clone()).is_err()
@@ -721,14 +697,6 @@ impl<C: CollectionContainer> ConsensusManager<C> {
         Ok(status)
     }
 
-    fn shadow_apply(&self, operation: &ConsensusOperations) -> Option<ApplyOutcome> {
-        if self.shadow_mode == ShadowMode::Disabled {
-            return None;
-        }
-
-        Some(self.state_machine_apply(operation))
-    }
-
     fn shadow_compare<T>(
         &self,
         operation: &ConsensusOperations,
@@ -748,12 +716,10 @@ impl<C: CollectionContainer> ConsensusManager<C> {
         operation: &ConsensusOperations,
         apply: impl FnOnce() -> StorageResult<T>,
     ) -> StorageResult<T> {
-        let outcome = self.shadow_apply(operation);
+        let outcome = self.state_machine_apply(operation);
         let result = apply();
 
-        if let Some(outcome) = outcome {
-            self.shadow_compare(operation, &outcome, &result);
-        }
+        self.shadow_compare(operation, &outcome, &result);
 
         result
     }
