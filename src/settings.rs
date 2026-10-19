@@ -10,6 +10,7 @@ use collection::shards::shard::PeerId;
 use common::flags::FeatureFlags;
 use config::{Config, ConfigError, Environment, File, FileFormat, Source};
 use serde::Deserialize;
+use storage::content_manager::consensus_manager::ApplyMode;
 use storage::content_manager::consensus_shadow::ShadowMode;
 use storage::types::StorageConfig;
 use validator::{Validate, ValidationError};
@@ -181,7 +182,10 @@ pub struct ConsensusConfig {
     /// Compact WAL when it grows to enough applied entries
     #[serde(default = "default_compact_wal_entries")]
     pub compact_wal_entries: u64,
-    /// Compare consensus state machine with operation handlers
+    /// Handler used to apply committed consensus entries
+    #[serde(default)]
+    pub apply_mode: ApplyMode,
+    /// Compare consensus state machine with applied state
     #[serde(default)]
     pub shadow_state_machine: ShadowMode,
 }
@@ -195,6 +199,7 @@ impl Default for ConsensusConfig {
             message_timeout_ticks: default_message_timeout_tics(),
             compact_wal_entries: default_compact_wal_entries(),
             shadow_state_machine: ShadowMode::default(),
+            apply_mode: ApplyMode::default(),
         }
     }
 }
@@ -697,6 +702,19 @@ mod tests {
         assert_eq!(
             settings.cluster.consensus.shadow_state_machine,
             ShadowMode::Panic,
+        );
+    }
+
+    #[expect(clippy::disallowed_types, reason = "#[sealed_test] uses std::fs::File")]
+    #[sealed_test]
+    fn consensus_apply_mode_from_env() {
+        unsafe { env::set_var("QDRANT__CLUSTER__CONSENSUS__APPLY_MODE", "state_machine") };
+
+        let settings = Settings::new(None).expect("failed to load config");
+
+        assert_eq!(
+            settings.cluster.consensus.apply_mode,
+            ApplyMode::StateMachine
         );
     }
 

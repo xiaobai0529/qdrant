@@ -1,4 +1,4 @@
-//! Run consensus state machine alongside operation handlers and report divergences
+//! Maintain consensus state for application or validation and report divergences
 
 pub mod diff;
 
@@ -16,7 +16,7 @@ use crate::content_manager::consensus::persistent::Persistent;
 use crate::content_manager::consensus_manager::CollectionsSnapshot;
 use crate::content_manager::consensus_ops::ConsensusOperations;
 use crate::content_manager::consensus_state_machine::{
-    ApplyOutcome, ClusterState, ConsensusStateMachine,
+    Action, ApplyOutcome, ClusterState, ConsensusStateMachine,
 };
 use crate::content_manager::errors::{StorageError, StorageResult};
 
@@ -44,7 +44,7 @@ impl ShadowMode {
     }
 }
 
-/// Consensus state machine used to check operation handlers
+/// Lazily initialized consensus state machine used for application or validation
 pub struct ShadowStateMachine {
     /// Initialized from applied state on first use and after invalidation
     state_machine: Option<ConsensusStateMachine>,
@@ -52,7 +52,7 @@ pub struct ShadowStateMachine {
 }
 
 impl ShadowStateMachine {
-    fn new(panic_on_divergence: bool) -> Self {
+    pub(crate) fn new(panic_on_divergence: bool) -> Self {
         Self {
             state_machine: None,
             panic_on_divergence,
@@ -73,11 +73,52 @@ impl ShadowStateMachine {
         persistent: &Persistent,
         operation: &ConsensusOperations,
     ) -> ApplyOutcome {
+        self.prepare(toc, persistent);
+        let state_machine = self.state_machine.as_mut().expect("initialized above");
+
+        let outcome = state_machine.apply(operation);
+        log::debug!("Consensus shadow operation {operation:?}: {outcome:?}");
+
+        outcome
+    }
+
+    /// Plan every operation against temporary state before changing the applied state
+    pub(crate) fn apply_batch(
+        &mut self,
+        toc: &impl CollectionContainer,
+        persistent: &Persistent,
+        operations: &[ConsensusOperations],
+    ) -> StorageResult<Vec<Vec<Action>>> {
+        self.prepare(toc, persistent);
+        let mut machine = self
+            .state_machine
+            .as_ref()
+            .expect("initialized above")
+            .clone();
+        let mut batch = Vec::with_capacity(operations.len());
+
+        for operation in operations {
+            match machine.apply(operation) {
+                ApplyOutcome::Accepted(actions) => batch.push(actions),
+                ApplyOutcome::Rejected(error) => return Err(error),
+                ApplyOutcome::NotCovered => {
+                    return Err(StorageError::service_error(format!(
+                        "Consensus operation is not modeled: {operation:?}",
+                    )));
+                }
+            }
+        }
+
+        self.state_machine = Some(machine);
+        Ok(batch)
+    }
+
+    fn prepare(&mut self, toc: &impl CollectionContainer, persistent: &Persistent) {
         // Partial snapshot recovery can change payload index schema without a consensus operation.
         // Refresh affected collections so state machine applies next operation to recovered state.
         self.resync(toc, toc.take_dirty_collections());
 
-        let state_machine = self.state_machine.get_or_insert_with(|| {
+        self.state_machine.get_or_insert_with(|| {
             let state = read_cluster_state(toc, persistent);
             let context = toc.node_context();
             log::info!(
@@ -89,11 +130,6 @@ impl ShadowStateMachine {
 
             ConsensusStateMachine::new(state, context)
         });
-
-        let outcome = state_machine.apply(operation);
-        log::debug!("Consensus shadow operation {operation:?}: {outcome:?}");
-
-        outcome
     }
 
     pub fn compare<T>(
