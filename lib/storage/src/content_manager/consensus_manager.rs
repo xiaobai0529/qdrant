@@ -146,6 +146,8 @@ impl<C: CollectionContainer> ConsensusManager<C> {
             wal.clear()?;
         }
 
+        let state_machine = StateMachineDriver::new(toc.as_ref(), &persistent_state);
+
         Ok(Self {
             persistent: RwLock::new(persistent_state),
             is_leader_established: Arc::new(IsReady::default()),
@@ -160,7 +162,7 @@ impl<C: CollectionContainer> ConsensusManager<C> {
             message_send_failures: Default::default(),
             next_peer_metadata_update_attempt: Mutex::new(Instant::now()),
             applied_log: Default::default(),
-            state_machine: Mutex::new(StateMachineDriver::default()),
+            state_machine: Mutex::new(state_machine),
         })
     }
 

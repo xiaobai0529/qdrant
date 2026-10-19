@@ -422,16 +422,19 @@ fn joint_configuration_save_failure_replays_both_transitions() {
 
 #[test]
 fn discovery_address_updates_invalidate_application_state() {
-    let (dir, _handle, dispatcher) = new_dispatcher();
+    let (dir, handle, dispatcher) = new_dispatcher();
     let pass = new_unchecked_verification_pass();
     let toc = dispatcher.toc(&FULL_ACCESS, &pass);
     let manager = consensus_manager(&dir, toc.clone());
     let nop = entry_from_meta(CollectionMetaOperations::Nop { token: 0 });
     manager.apply_normal_entry(&nop).unwrap();
 
-    manager
-        .add_peer(1, "http://127.0.0.1:6336".parse().unwrap())
-        .unwrap();
+    // Bootstrap discovers peers from async code, where reading collection state would panic.
+    handle.block_on(async {
+        manager
+            .add_peer(1, "http://127.0.0.1:6336".parse().unwrap())
+            .unwrap();
+    });
     manager.apply_normal_entry(&nop).unwrap();
 
     assert!(manager.peer_address_by_id().contains_key(&1));

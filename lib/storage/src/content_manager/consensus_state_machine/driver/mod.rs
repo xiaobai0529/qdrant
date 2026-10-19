@@ -19,19 +19,37 @@ use crate::content_manager::consensus_state_machine::{
 use crate::content_manager::errors::{StorageError, StorageResult};
 
 /// Consensus state machine initialized from applied state and used to plan operations
-#[derive(Default)]
 pub struct StateMachineDriver {
-    /// Initialized from applied state on first use and after invalidation
-    state_machine: Option<ConsensusStateMachine>,
+    state_machine: ConsensusStateMachine,
+    /// Discovery runs in async code and cannot synchronously read collections.
+    /// Defer reloading until the next consensus operation is planned.
+    needs_reload: bool,
 }
 
 impl StateMachineDriver {
+    pub fn new(toc: &impl CollectionContainer, persistent: &Persistent) -> Self {
+        let state = read_cluster_state(toc, persistent);
+        let context = toc.node_context();
+        log::info!(
+            "Consensus state machine initialized: peer_id={}, collections={}, peers={}",
+            context.peer_id,
+            state.collections.len(),
+            state.peer_address_by_id.len(),
+        );
+        let state_machine = ConsensusStateMachine::new(state, context);
+
+        Self {
+            state_machine,
+            needs_reload: false,
+        }
+    }
+
     pub fn invalidate(&mut self) {
-        if self.state_machine.is_some() {
+        if !self.needs_reload {
             log::debug!("Consensus state machine invalidated");
         }
 
-        self.state_machine = None;
+        self.needs_reload = true;
     }
 
     pub fn apply(
@@ -41,9 +59,7 @@ impl StateMachineDriver {
         operation: &ConsensusOperations,
     ) -> ApplyOutcome {
         self.prepare(toc, persistent);
-        let state_machine = self.state_machine.as_mut().expect("initialized above");
-
-        let outcome = state_machine.apply(operation);
+        let outcome = self.state_machine.apply(operation);
         log::debug!("Consensus state machine operation {operation:?}: {outcome:?}");
 
         outcome
@@ -57,11 +73,7 @@ impl StateMachineDriver {
         operations: &[ConsensusOperations],
     ) -> StorageResult<Vec<Vec<Action>>> {
         self.prepare(toc, persistent);
-        let mut machine = self
-            .state_machine
-            .as_ref()
-            .expect("initialized above")
-            .clone();
+        let mut machine = self.state_machine.clone();
         let mut batch = Vec::with_capacity(operations.len());
 
         for operation in operations {
@@ -76,27 +88,19 @@ impl StateMachineDriver {
             }
         }
 
-        self.state_machine = Some(machine);
+        self.state_machine = machine;
         Ok(batch)
     }
 
     fn prepare(&mut self, toc: &impl CollectionContainer, persistent: &Persistent) {
         // Partial snapshot recovery can change payload index schema without a consensus operation.
         // Refresh affected collections so state machine applies next operation to recovered state.
-        self.resync(toc, toc.take_dirty_collections());
-
-        self.state_machine.get_or_insert_with(|| {
-            let state = read_cluster_state(toc, persistent);
-            let context = toc.node_context();
-            log::info!(
-                "Consensus state machine initialized: peer_id={}, collections={}, peers={}",
-                context.peer_id,
-                state.collections.len(),
-                state.peer_address_by_id.len(),
-            );
-
-            ConsensusStateMachine::new(state, context)
-        });
+        let dirty_collections = toc.take_dirty_collections();
+        if self.needs_reload {
+            *self = Self::new(toc, persistent);
+        } else {
+            self.resync(toc, dirty_collections);
+        }
     }
 
     pub fn compare<T>(
@@ -134,9 +138,9 @@ impl StateMachineDriver {
         outcome: &ApplyOutcome,
         result: &StorageResult<T>,
     ) -> Option<String> {
-        let Some(state_machine) = &self.state_machine else {
+        if self.needs_reload {
             return None;
-        };
+        }
 
         // Handler may have persisted only part of operation before returning a service error,
         // while consensus state machine applied it completely. Invalidate instead of comparing.
@@ -150,7 +154,7 @@ impl StateMachineDriver {
             return None;
         }
 
-        let collections = target_collections(operation, state_machine.state());
+        let collections = target_collections(operation, self.state_machine.state());
 
         // State machine cannot apply an uncovered operation.
         // Resync collections the operation may have changed.
@@ -176,9 +180,7 @@ impl StateMachineDriver {
         // Refresh affected collections so recovered state is not reported as a divergence.
         self.resync(toc, toc.take_dirty_collections());
 
-        let Some(state_machine) = &self.state_machine else {
-            return None;
-        };
+        let state_machine = &self.state_machine;
 
         let applied = read_shallow_state(toc, persistent);
 
@@ -213,17 +215,13 @@ impl StateMachineDriver {
         toc: &impl CollectionContainer,
         collections: impl IntoIterator<Item = CollectionId>,
     ) {
-        let Some(state_machine) = &mut self.state_machine else {
-            return;
-        };
-
         for collection in collections {
             let state = toc.collection_state(&collection);
             log::debug!(
                 "Consensus state machine resynchronizing collection {collection:?}: present={}",
                 state.is_some(),
             );
-            state_machine.resync_collection(&collection, state);
+            self.state_machine.resync_collection(&collection, state);
         }
     }
 }

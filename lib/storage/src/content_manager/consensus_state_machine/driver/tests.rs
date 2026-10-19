@@ -65,12 +65,14 @@ fn matching_entry() {
         .expect("entry applied");
 }
 
-/// `ConsensusManager` should initialize consensus state machine before running operation handler
+/// Constructing `ConsensusManager` should initialize the state machine from applied state
 #[test]
-fn manager_initializes_state_machine_before_handler() {
+fn manager_initializes_state_machine_on_construction() {
     let container = Arc::new(container());
     let dir = tempdir();
     let manager = manager(container.clone(), dir.path());
+
+    assert_eq!(container.snapshots(), 1);
 
     manager._apply_normal_entry(&entry(&nop())).expect("nop");
 
@@ -147,7 +149,7 @@ fn manager_compares_peer_removal_rejection_before_stop_flag() {
     assert_eq!(
         container.snapshots(),
         1,
-        "peer removal must run state machine validation"
+        "rejected peer removal must not rebuild the state machine"
     );
     assert_eq!(*container.collections.lock(), before);
 }
@@ -172,7 +174,7 @@ fn manager_self_removal_skips_state_machine_validation() {
     let stop = manager._on_peer_remove(PEER_ID).expect("self removal");
 
     assert!(stop);
-    assert_eq!(container.snapshots(), 0);
+    assert_eq!(container.snapshots(), 1);
 }
 
 /// Consensus state machine and `Container` contain the same collection, but with different shard
@@ -462,11 +464,14 @@ struct TestDriver {
 impl TestDriver {
     fn new() -> Self {
         let dir = tempdir();
+        let container = container();
+        let persistent = persistent(dir.path());
+        let machine = Mutex::new(StateMachineDriver::new(&container, &persistent));
 
         Self {
-            machine: Mutex::new(StateMachineDriver::default()),
-            container: container(),
-            persistent: persistent(dir.path()),
+            machine,
+            container,
+            persistent,
             _dir: dir,
         }
     }
