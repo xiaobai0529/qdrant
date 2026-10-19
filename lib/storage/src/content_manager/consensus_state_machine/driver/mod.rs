@@ -1,4 +1,4 @@
-//! Maintain consensus state for application or validation and report divergences
+//! Plan consensus operations and compare predicted state with applied state
 
 pub mod diff;
 
@@ -18,17 +18,17 @@ use crate::content_manager::consensus_state_machine::{
 };
 use crate::content_manager::errors::{StorageError, StorageResult};
 
-/// Lazily initialized consensus state machine used for application or validation
+/// Consensus state machine initialized from applied state and used to plan operations
 #[derive(Default)]
-pub struct ShadowStateMachine {
+pub struct StateMachineDriver {
     /// Initialized from applied state on first use and after invalidation
     state_machine: Option<ConsensusStateMachine>,
 }
 
-impl ShadowStateMachine {
+impl StateMachineDriver {
     pub fn invalidate(&mut self) {
         if self.state_machine.is_some() {
-            log::debug!("Consensus shadow state machine invalidated");
+            log::debug!("Consensus state machine invalidated");
         }
 
         self.state_machine = None;
@@ -44,7 +44,7 @@ impl ShadowStateMachine {
         let state_machine = self.state_machine.as_mut().expect("initialized above");
 
         let outcome = state_machine.apply(operation);
-        log::debug!("Consensus shadow operation {operation:?}: {outcome:?}");
+        log::debug!("Consensus state machine operation {operation:?}: {outcome:?}");
 
         outcome
     }
@@ -89,7 +89,7 @@ impl ShadowStateMachine {
             let state = read_cluster_state(toc, persistent);
             let context = toc.node_context();
             log::info!(
-                "Consensus shadow state machine initialized: peer_id={}, collections={}, peers={}",
+                "Consensus state machine initialized: peer_id={}, collections={}, peers={}",
                 context.peer_id,
                 state.collections.len(),
                 state.peer_address_by_id.len(),
@@ -142,7 +142,7 @@ impl ShadowStateMachine {
         // while consensus state machine applied it completely. Invalidate instead of comparing.
         if matches!(result, Err(StorageError::ServiceError { .. })) {
             log::debug!(
-                "Consensus shadow comparison skipped after handler service error: \
+                "Consensus state machine comparison skipped after handler service error: \
                  operation={operation:?}; error={:?}",
                 result.as_ref().err(),
             );
@@ -159,7 +159,7 @@ impl ShadowStateMachine {
         // so invalidate the entire consensus state machine.
         if matches!(outcome, ApplyOutcome::NotCovered) {
             log::debug!(
-                "Consensus shadow comparison skipped for uncovered operation: {operation:?}"
+                "Consensus state machine comparison skipped for uncovered operation: {operation:?}"
             );
             if collections.is_empty() {
                 self.invalidate();
@@ -196,7 +196,7 @@ impl ShadowStateMachine {
         }
 
         if report.is_empty() {
-            log::debug!("Consensus shadow match");
+            log::debug!("Consensus state machine matches applied state");
             return None;
         }
 
@@ -220,7 +220,7 @@ impl ShadowStateMachine {
         for collection in collections {
             let state = toc.collection_state(&collection);
             log::debug!(
-                "Consensus shadow resynchronizing collection {collection:?}: present={}",
+                "Consensus state machine resynchronizing collection {collection:?}: present={}",
                 state.is_some(),
             );
             state_machine.resync_collection(&collection, state);

@@ -19,6 +19,7 @@
 //! cluster state already matches.
 
 pub mod action;
+pub mod driver;
 pub mod state;
 
 #[cfg(test)]

@@ -19,7 +19,7 @@ impl<C: CollectionContainer> ConsensusManager<C> {
         } else {
             true
         };
-        let outcome = self.state_machine_apply(operation);
+        let outcome = self.plan_operation(operation);
         let result = match &outcome {
             ApplyOutcome::Accepted(actions) => actions
                 .iter()
@@ -34,21 +34,21 @@ impl<C: CollectionContainer> ConsensusManager<C> {
         let removes_self = matches!(operation, ConsensusOperations::RemovePeer(peer_id) if *peer_id == self.this_peer_id());
         if removes_self {
             // Self-removal clears all outbound addresses and stops consensus application
-            self.invalidate_shadow();
+            self.invalidate_state_machine();
         } else if matches!(result, Err(StorageError::ServiceError { .. })) {
             // The interpreter has advanced past any writes that failed. Replay must start
             // from the state those writes actually left in storage.
-            self.invalidate_shadow();
+            self.invalidate_state_machine();
         } else if Self::should_check_state_machine() {
-            self.shadow_compare(operation, &outcome, &result);
+            self.compare_state_machine(operation, &outcome, &result);
         }
 
         result
     }
 
-    pub(super) fn state_machine_apply(&self, operation: &ConsensusOperations) -> ApplyOutcome {
+    pub(super) fn plan_operation(&self, operation: &ConsensusOperations) -> ApplyOutcome {
         let persistent = self.persistent.read();
-        self.shadow
+        self.state_machine
             .lock()
             .apply(self.toc.as_ref(), &persistent, operation)
     }
@@ -80,7 +80,7 @@ impl<C: CollectionContainer> ConsensusManager<C> {
     ) -> StorageResult<bool> {
         let result = self.apply_conf_change_actions(entry, change, raw_node);
         if result.is_err() {
-            self.invalidate_shadow();
+            self.invalidate_state_machine();
         }
 
         result
@@ -127,7 +127,7 @@ impl<C: CollectionContainer> ConsensusManager<C> {
 
         let batch = {
             let persistent = self.persistent.read();
-            self.shadow
+            self.state_machine
                 .lock()
                 .apply_batch(self.toc.as_ref(), &persistent, &operations)
         };
@@ -160,11 +160,11 @@ impl<C: CollectionContainer> ConsensusManager<C> {
             matches!(operation, ConsensusOperations::RemovePeer(peer_id) if *peer_id == self.this_peer_id())
         });
         if stop_consensus {
-            self.invalidate_shadow();
+            self.invalidate_state_machine();
         } else if Self::should_check_state_machine() {
             // Planning advanced to the end of the batch, so compare only after every action ran
             for (operation, actions) in operations.iter().zip(batch) {
-                self.shadow_compare(operation, &ApplyOutcome::Accepted(actions), &Ok(true));
+                self.compare_state_machine(operation, &ApplyOutcome::Accepted(actions), &Ok(true));
             }
         }
 

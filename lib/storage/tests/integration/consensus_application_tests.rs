@@ -18,7 +18,7 @@ use storage::content_manager::CollectionContainer;
 use storage::content_manager::collection_meta_ops::*;
 use storage::content_manager::consensus_manager::{ConsensusManager, SnapshotData};
 use storage::content_manager::consensus_ops::ConsensusOperations;
-use storage::content_manager::consensus_shadow::read_cluster_state;
+use storage::content_manager::consensus_state_machine::driver::read_cluster_state;
 use storage::content_manager::consensus_state_machine::{Action, ClusterState};
 use storage::content_manager::errors::StorageError;
 use storage::content_manager::shard_distribution::ShardDistributionProposal;

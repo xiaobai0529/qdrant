@@ -1,6 +1,6 @@
 //! Run consensus state machine alongside a stand-in for `TableOfContent`.
 //!
-//! Most tests use `ShadowStateMachine` directly, so they can inspect divergence reports.
+//! Most tests use `StateMachineDriver` directly, so they can inspect divergence reports.
 //! Tests using `ConsensusManager` run its retained operation handlers with validation
 //! and check that debug builds panic on divergences.
 
@@ -147,7 +147,7 @@ fn manager_compares_peer_removal_rejection_before_stop_flag() {
     assert_eq!(
         container.snapshots(),
         1,
-        "peer removal must run shadow validation"
+        "peer removal must run state machine validation"
     );
     assert_eq!(*container.collections.lock(), before);
 }
@@ -164,7 +164,7 @@ fn manager_detects_peer_removal_outcome_divergence() {
 }
 
 #[test]
-fn manager_self_removal_skips_shadow_validation() {
+fn manager_self_removal_skips_state_machine_validation() {
     let container = Arc::new(container());
     let dir = tempdir();
     let manager = manager(container.clone(), dir.path());
@@ -179,14 +179,14 @@ fn manager_self_removal_skips_shadow_validation() {
 /// state; validation should report the difference
 #[test]
 fn diverged_collection() {
-    let shadow = Shadow::new();
+    let driver = TestDriver::new();
 
-    assert_eq!(shadow.apply(&nop()), None);
+    assert_eq!(driver.apply(&nop()), None);
 
-    shadow.container.add_shard(0);
+    driver.container.add_shard(0);
 
     assert_eq!(
-        shadow.apply(&drop_payload_index(COLLECTION)).as_deref(),
+        driver.apply(&drop_payload_index(COLLECTION)).as_deref(),
         Some(format!("collections[{COLLECTION}].shards").as_str()),
     );
 }
@@ -195,14 +195,14 @@ fn diverged_collection() {
 /// differences under that collection's name
 #[test]
 fn diverged_collection_under_alias() {
-    let shadow = Shadow::new();
+    let driver = TestDriver::new();
 
-    assert_eq!(shadow.apply(&nop()), None);
+    assert_eq!(driver.apply(&nop()), None);
 
-    shadow.container.add_shard(0);
+    driver.container.add_shard(0);
 
     assert_eq!(
-        shadow.apply(&drop_payload_index(ALIAS)).as_deref(),
+        driver.apply(&drop_payload_index(ALIAS)).as_deref(),
         Some(format!("collections[{COLLECTION}].shards").as_str()),
     );
 }
@@ -210,12 +210,12 @@ fn diverged_collection_under_alias() {
 /// Peer removal can change every collection, so validation must compare all of them
 #[test]
 fn remove_peer_compares_collections() {
-    let shadow = Shadow::new();
-    shadow.container.add_shard_for(0, OTHER_PEER_ID);
+    let driver = TestDriver::new();
+    driver.container.add_shard_for(0, OTHER_PEER_ID);
 
-    assert_eq!(shadow.apply(&nop()), None);
+    assert_eq!(driver.apply(&nop()), None);
     assert_eq!(
-        shadow
+        driver
             .apply(&ConsensusOperations::RemovePeer(OTHER_PEER_ID))
             .as_deref(),
         Some(format!("collections[{COLLECTION}].shards").as_str()),
@@ -226,14 +226,14 @@ fn remove_peer_compares_collections() {
 /// the same error class
 #[test]
 fn matching_rejection() {
-    let shadow = Shadow::new();
+    let driver = TestDriver::new();
 
     let rejection = Err(StorageError::not_found(format!(
         "Collection `{MISSING}` doesn't exist!"
     )));
 
     assert_eq!(
-        shadow.apply_with(&create_payload_index(MISSING), &rejection),
+        driver.apply_with(&create_payload_index(MISSING), &rejection),
         None,
     );
 }
@@ -243,11 +243,11 @@ fn matching_rejection() {
 /// reaches the client.
 #[test]
 fn differing_rejection() {
-    let shadow = Shadow::new();
+    let driver = TestDriver::new();
     let rejection = Err(StorageError::bad_request("no"));
 
     assert!(
-        shadow
+        driver
             .apply_with(&create_payload_index(MISSING), &rejection)
             .is_some()
     );
@@ -257,10 +257,10 @@ fn differing_rejection() {
 /// operation handler, even though neither state changes
 #[test]
 fn rejected_by_apply_only() {
-    let shadow = Shadow::new();
+    let driver = TestDriver::new();
     let rejection = Err(StorageError::bad_request("no"));
 
-    assert!(shadow.apply_with(&nop(), &rejection).is_some());
+    assert!(driver.apply_with(&nop(), &rejection).is_some());
 }
 
 /// An uncovered operation that names no collection may have changed any collection,
@@ -274,42 +274,42 @@ fn not_covered_invalidates() {
 /// instead of rebuilding the entire consensus state machine
 #[test]
 fn not_covered_resync() {
-    let shadow = Shadow::new();
+    let driver = TestDriver::new();
 
     // Initialization reads all collections; resync below should only read the named collection
-    assert_eq!(shadow.apply(&nop()), None);
+    assert_eq!(driver.apply(&nop()), None);
 
     // Add shard directly to `Container`, so its collection state no longer matches state machine
-    shadow.container.add_shard(0);
+    driver.container.add_shard(0);
 
     // Simulate an uncovered operation that names this collection
     assert_eq!(
-        shadow.diff_as_not_covered(&drop_payload_index(COLLECTION)),
+        driver.diff_as_not_covered(&drop_payload_index(COLLECTION)),
         None
     );
 
     // `drop_payload_index` makes `apply` compare collection states, which should match after resync
-    assert_eq!(shadow.apply(&drop_payload_index(COLLECTION)), None);
+    assert_eq!(driver.apply(&drop_payload_index(COLLECTION)), None);
 
     // Full collection state should have been read only once during initialization;
     // resync should have read only the named collection
-    assert_eq!(shadow.container.snapshots(), 1);
+    assert_eq!(driver.container.snapshots(), 1);
 }
 
 /// Resyncing one collection should not hide a divergence in unrelated state
 #[test]
 fn not_covered_keeps_the_rest() {
-    let shadow = Shadow::new();
+    let driver = TestDriver::new();
 
-    assert_eq!(shadow.apply(&nop()), None);
+    assert_eq!(driver.apply(&nop()), None);
 
-    shadow.container.add_alias(OTHER_ALIAS);
+    driver.container.add_alias(OTHER_ALIAS);
     assert_eq!(
-        shadow.diff_as_not_covered(&drop_payload_index(COLLECTION)),
+        driver.diff_as_not_covered(&drop_payload_index(COLLECTION)),
         None
     );
 
-    assert_eq!(shadow.apply(&nop()).as_deref(), Some("aliases"));
+    assert_eq!(driver.apply(&nop()).as_deref(), Some("aliases"));
 }
 
 /// Partial snapshot recovery can rewrite collection payload index schema without a consensus
@@ -317,26 +317,26 @@ fn not_covered_keeps_the_rest() {
 /// state as a divergence.
 #[test]
 fn dirty_collection_resync() {
-    let shadow = Shadow::new();
+    let driver = TestDriver::new();
 
-    assert_eq!(shadow.apply(&nop()), None);
+    assert_eq!(driver.apply(&nop()), None);
 
-    shadow.container.add_shard(0);
-    shadow.container.mark_dirty();
+    driver.container.add_shard(0);
+    driver.container.mark_dirty();
 
     // The operation names the collection, so validation should read its state after resync
-    assert_eq!(shadow.apply(&drop_payload_index(COLLECTION)), None);
+    assert_eq!(driver.apply(&drop_payload_index(COLLECTION)), None);
 }
 
 /// Partial snapshot recovery can finish after consensus state machine applies an operation but
 /// before validation compares state. A second resync should load recovered collection state.
 #[test]
 fn dirty_collection_resync_mid_apply() {
-    let shadow = Shadow::new();
+    let driver = TestDriver::new();
 
-    assert_eq!(shadow.apply(&nop()), None);
+    assert_eq!(driver.apply(&nop()), None);
 
-    let report = shadow.apply_between(&drop_payload_index(COLLECTION), &Ok(true), |container| {
+    let report = driver.apply_between(&drop_payload_index(COLLECTION), &Ok(true), |container| {
         container.add_shard(0);
         container.mark_dirty();
     });
@@ -358,14 +358,14 @@ fn service_error_invalidates() {
 /// Alias added directly to `Container` would be reported as a divergence if state machine is not
 /// invalidated.
 fn invalidates(operation: &ConsensusOperations, result: &StorageResult<bool>) {
-    let shadow = Shadow::new();
+    let driver = TestDriver::new();
 
-    assert_eq!(shadow.apply(&nop()), None);
+    assert_eq!(driver.apply(&nop()), None);
 
-    shadow.container.add_alias(OTHER_ALIAS);
-    assert_eq!(shadow.apply_with(operation, result), None);
+    driver.container.add_alias(OTHER_ALIAS);
+    assert_eq!(driver.apply_with(operation, result), None);
 
-    assert_eq!(shadow.apply(&nop()), None);
+    assert_eq!(driver.apply(&nop()), None);
 }
 
 /// Snapshot recovery replaces applied state without updating consensus state machine,
@@ -449,22 +449,22 @@ fn read_shallow_state() {
     assert_eq!(state.cluster_metadata, persistent.cluster_metadata);
 }
 
-/// Test wrapper that applies operations to `ShadowStateMachine` and compares its state with
+/// Test wrapper that applies operations to `StateMachineDriver` and compares its state with
 /// `Container` directly, without `ConsensusManager`
-struct Shadow {
-    machine: Mutex<ShadowStateMachine>,
+struct TestDriver {
+    machine: Mutex<StateMachineDriver>,
     container: Container,
     persistent: Persistent,
     /// Holds the state directory alive for as long as `persistent` reads it
     _dir: TempDir,
 }
 
-impl Shadow {
+impl TestDriver {
     fn new() -> Self {
         let dir = tempdir();
 
         Self {
-            machine: Mutex::new(ShadowStateMachine::default()),
+            machine: Mutex::new(StateMachineDriver::default()),
             container: container(),
             persistent: persistent(dir.path()),
             _dir: dir,
@@ -520,7 +520,10 @@ impl Shadow {
 }
 
 fn tempdir() -> TempDir {
-    Builder::new().prefix("shadow").tempdir().expect("temp dir")
+    Builder::new()
+        .prefix("consensus-state-machine")
+        .tempdir()
+        .expect("temp dir")
 }
 
 /// Build `ConsensusManager` with the test `Container`

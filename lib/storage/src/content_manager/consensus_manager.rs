@@ -30,8 +30,8 @@ use tonic::transport::Uri;
 use super::CollectionContainer;
 use super::alias_mapping::AliasMapping;
 use super::consensus_ops::{ConsensusOperations, SnapshotStatus};
-use super::consensus_shadow::ShadowStateMachine;
 use super::consensus_state_machine::ApplyOutcome;
+use super::consensus_state_machine::driver::StateMachineDriver;
 use super::errors::{StorageError, StorageResult};
 use crate::content_manager::consensus::applied_log::{AppliedEntryRing, AppliedLog};
 use crate::content_manager::consensus::consensus_wal::ConsensusOpWal;
@@ -115,7 +115,7 @@ pub struct ConsensusManager<C: CollectionContainer> {
     /// Recently applied entries, for `/profiler/consensus_lag`. Diagnostics only.
     applied_log: AppliedEntryRing,
     /// Consensus state machine used to plan application and check applied state
-    shadow: Mutex<ShadowStateMachine>,
+    state_machine: Mutex<StateMachineDriver>,
 }
 
 impl<C: CollectionContainer> ConsensusManager<C> {
@@ -160,7 +160,7 @@ impl<C: CollectionContainer> ConsensusManager<C> {
             message_send_failures: Default::default(),
             next_peer_metadata_update_attempt: Mutex::new(Instant::now()),
             applied_log: Default::default(),
-            shadow: Mutex::new(ShadowStateMachine::default()),
+            state_machine: Mutex::new(StateMachineDriver::default()),
         })
     }
 
@@ -328,10 +328,10 @@ impl<C: CollectionContainer> ConsensusManager<C> {
 
         let result = if self.this_peer_id() == peer_id {
             // If the current peer is removed, we stop consensus and no longer need CSM validation
-            self.invalidate_shadow();
+            self.invalidate_state_machine();
             self.remove_peer(peer_id)
         } else {
-            self.apply_with_shadow(&operation, || self.remove_peer(peer_id))
+            self.apply_with_validation(&operation, || self.remove_peer(peer_id))
         };
 
         let (report, stop_consensus) = match result {
@@ -388,7 +388,7 @@ impl<C: CollectionContainer> ConsensusManager<C> {
         // while the in-memory state machine has applied it completely.
         // Reload the state those writes left behind before planning the retry.
         if result.is_err() {
-            self.invalidate_shadow();
+            self.invalidate_state_machine();
         }
 
         result
@@ -542,7 +542,7 @@ impl<C: CollectionContainer> ConsensusManager<C> {
                             peer_id: single_change.node_id,
                             uri: peer_uri.to_string(),
                         };
-                        self.apply_with_shadow(&operation, || {
+                        self.apply_with_validation(&operation, || {
                             self.add_peer(single_change.node_id, peer_uri)
                         })?;
                     } else {
@@ -571,7 +571,7 @@ impl<C: CollectionContainer> ConsensusManager<C> {
                         };
 
                         // Add peer to state
-                        self.apply_with_shadow(&operation, || {
+                        self.apply_with_validation(&operation, || {
                             self.add_peer(single_change.node_id, peer_uri.clone())
                         })?;
 
@@ -633,11 +633,11 @@ impl<C: CollectionContainer> ConsensusManager<C> {
         let operation: ConsensusOperations = entry.try_into()?;
 
         // Plan before the operation handler changes applied state
-        let outcome = self.state_machine_apply(&operation);
+        let outcome = self.plan_operation(&operation);
         let on_apply = self.on_consensus_op_apply.lock().remove(&operation);
         let result = self.apply_consensus_op(operation.clone());
 
-        self.shadow_compare(&operation, &outcome, &result);
+        self.compare_state_machine(&operation, &outcome, &result);
 
         if let Some(on_apply) = on_apply
             && on_apply.send(result.clone()).is_err()
@@ -697,7 +697,7 @@ impl<C: CollectionContainer> ConsensusManager<C> {
         Ok(status)
     }
 
-    fn shadow_compare<T>(
+    fn compare_state_machine<T>(
         &self,
         operation: &ConsensusOperations,
         outcome: &ApplyOutcome,
@@ -705,27 +705,31 @@ impl<C: CollectionContainer> ConsensusManager<C> {
     ) {
         let persistent = self.persistent.read();
 
-        self.shadow
-            .lock()
-            .compare(self.toc.as_ref(), &persistent, operation, outcome, result);
+        self.state_machine.lock().compare(
+            self.toc.as_ref(),
+            &persistent,
+            operation,
+            outcome,
+            result,
+        );
     }
 
     /// Run one non-normal-entry handler between state-machine planning and comparison
-    fn apply_with_shadow<T>(
+    fn apply_with_validation<T>(
         &self,
         operation: &ConsensusOperations,
         apply: impl FnOnce() -> StorageResult<T>,
     ) -> StorageResult<T> {
-        let outcome = self.state_machine_apply(operation);
+        let outcome = self.plan_operation(operation);
         let result = apply();
 
-        self.shadow_compare(operation, &outcome, &result);
+        self.compare_state_machine(operation, &outcome, &result);
 
         result
     }
 
-    fn invalidate_shadow(&self) {
-        self.shadow.lock().invalidate();
+    fn invalidate_state_machine(&self) {
+        self.state_machine.lock().invalidate();
     }
 
     // Outer `Result` is "fatal" error, inner `Result` is "transient"/"local" error.
@@ -737,7 +741,7 @@ impl<C: CollectionContainer> ConsensusManager<C> {
 
         // Snapshot recovery replaces applied state without updating consensus state machine.
         // Invalidate it so it rebuilds from recovered state on next entry.
-        self.invalidate_shadow();
+        self.invalidate_state_machine();
 
         let SnapshotData {
             collections_data,
@@ -863,7 +867,7 @@ impl<C: CollectionContainer> ConsensusManager<C> {
         // Discovery can register addresses before a configuration entry is committed.
         // Hold the persistent lock through invalidation so planning cannot read old addresses
         // after invalidation and then miss the discovery write.
-        self.invalidate_shadow();
+        self.invalidate_state_machine();
         result
     }
 
